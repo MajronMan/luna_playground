@@ -1,0 +1,1 @@
+def barify t: 'bar ' + t.toText + ' bar'

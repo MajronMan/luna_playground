@@ -1,0 +1,35 @@
+import Std.Foreign
+import Std.Foreign.C.Value
+
+
+def sign_that key msg:
+    keyLen = key . length
+    msgLen = msg . length
+    inBufKey = Pointer CUChar . mallocElems keyLen
+    inBufMsg = Pointer CUChar . mallocElems msgLen
+    keySize = CUInt.fromInt keyLen
+    msgSize = CUInt.fromInt msgLen
+    outBuf = Pointer CUChar . mallocElems 32
+    indexedKey = 0 . upto keyLen . zip key
+    indexedKey . each(ix, elem):
+        inBufKey . moveElems ix . write(CUChar.fromInt elem)
+
+    indexedMsg = 0 . upto msgLen . zip msg
+    indexedMsg . each(ix, elem):
+        inBufMsg . moveElems ix . write(CUChar.fromInt elem)
+
+    hmacFunPtr = lookupSymbol "hmac_luna" "hmac_sha256"
+    hmacFunPtr . call None [inBufKey.toCArg, keySize.toCArg, inBufMsg.toCArg, msgSize.toCArg, outBuf.toCArg]
+
+    result = 0 . upto 31 . each i:
+        outBuf . moveElems i . read . toInt
+
+    outBuf.free
+    inBufKey.free
+    inBufMsg.free
+
+    result
+
+
+def main:
+    print(sign_that [97] [98])
