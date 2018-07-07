@@ -34,10 +34,10 @@ def sign_that key msg:
     result
 
 
-def callAWS uri:
+def callAWS uri host:
     h1 = Http.post uri ""
     h2 =  h1 . addHeader "X-Amz-Date" fakeTimestamp
-    h3 = h2 . addHeader "Host" "lambda.eu-west-1.amazonaws.com"
+    h3 = h2 . addHeader "Host" host
     h4 = h3 . addHeader "Content-Type" "multipart/form-data"
     h5 = h4 . addHeader "Authorization" fakeAuthorization
     h5
@@ -64,8 +64,15 @@ def lol:
 
     print y2
 
-def main:
-    uri = "https://lambda.eu-west-1.amazonaws.com/2015-03-31/functions/TUTAJ/invocations"
-    resp = (callAWS uri) . perform
+def lambdaCall uri host:
+    resp = (callAWS uri host) . perform
     print (resp . successful)
     print (resp . text)
+
+def readConfig path:
+    f = JSON.parse (readFile path)
+    (f . getText "uri", f . getText "host")
+
+def main:
+    (uri, host) = readConfig "config.json"
+    lambdaCall uri host
