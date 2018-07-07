@@ -1,5 +1,8 @@
 import Std.Foreign
 import Std.Foreign.C.Value
+import Std.System
+import Std.HTTP
+import Std.Time
 
 
 def sign_that key msg:
@@ -11,12 +14,12 @@ def sign_that key msg:
     msgSize = CUInt.fromInt msgLen
     outBuf = Pointer CUChar . mallocElems 32
     indexedKey = 0 . upto keyLen . zip key
-    indexedKey . each(ix, elem):
-        inBufKey . moveElems ix . write(CUChar.fromInt elem)
+    indexedKey . each (ix, elem):
+        inBufKey . moveElems ix . write (CUChar.fromInt elem)
 
     indexedMsg = 0 . upto msgLen . zip msg
-    indexedMsg . each(ix, elem):
-        inBufMsg . moveElems ix . write(CUChar.fromInt elem)
+    indexedMsg . each (ix, elem):
+        inBufMsg . moveElems ix . write (CUChar.fromInt elem)
 
     hmacFunPtr = lookupSymbol "hmac_luna" "hmac_sha256"
     hmacFunPtr . call None [inBufKey.toCArg, keySize.toCArg, inBufMsg.toCArg, msgSize.toCArg, outBuf.toCArg]
@@ -31,5 +34,38 @@ def sign_that key msg:
     result
 
 
+def callAWS uri:
+    h1 = Http.post uri ""
+    h2 =  h1 . addHeader "X-Amz-Date" fakeTimestamp
+    h3 = h2 . addHeader "Host" "lambda.eu-west-1.amazonaws.com"
+    h4 = h3 . addHeader "Content-Type" "multipart/form-data"
+    h5 = h4 . addHeader "Authorization" fakeAuthorization
+    h5
+
+def fakeAuthorization:
+    System.getEnv "FAKE_AUTHORIZATION"
+
+def fakeTimestamp:
+    "20180707T123820Z"
+
+def getTimestamp:
+    Time.now.toUTC . format "%Y%m%dT%H%M%SZ"
+
+
+def lol:
+    x1 = System.lookupEnv "HOME"
+    print x1
+    x2 = System.lookupEnv "HOMEEEEEE"
+    print x2
+
+    y1 = System.getEnv "HOME"
+    print y1
+    y2 = System.getEnv "HOMEEEEEE"
+
+    print y2
+
 def main:
-    print(sign_that [97] [98])
+    uri = "https://lambda.eu-west-1.amazonaws.com/2015-03-31/functions/TUTAJ/invocations"
+    resp = (callAWS uri) . perform
+    print (resp . successful)
+    print (resp . text)
