@@ -34,45 +34,45 @@ def sign_that key msg:
     result
 
 
-def callAWS uri host:
-    h1 = Http.post uri ""
-    h2 =  h1 . addHeader "X-Amz-Date" fakeTimestamp
-    h3 = h2 . addHeader "Host" host
-    h4 = h3 . addHeader "Content-Type" "multipart/form-data"
-    h5 = h4 . addHeader "Authorization" fakeAuthorization
-    h5
-
 def fakeAuthorization:
     System.getEnv "FAKE_AUTHORIZATION"
 
 def fakeTimestamp:
-    "20180707T123820Z"
+    "20180707T155948Z"
 
 def getTimestamp:
     Time.now.toUTC . format "%Y%m%dT%H%M%SZ"
 
+def coalesce b: case b of
+    Nothing: ""
+    Just a: a
 
-def lol:
-    x1 = System.lookupEnv "HOME"
-    print x1
-    x2 = System.lookupEnv "HOMEEEEEE"
-    print x2
+class AWSConfig:
+    method :: Text
+    uri :: Text
+    body :: Text
+    host :: Text
 
-    y1 = System.getEnv "HOME"
-    print y1
-    y2 = System.getEnv "HOMEEEEEE"
+    def toRequest:
+        request = case self.method of
+            "POST": Http.post self.uri self.body
+            "PUT": Http.put self.uri self.body
+            other: Http.get self.uri
 
-    print y2
+        h2 = request . addHeader "X-Amz-Date" fakeTimestamp
+        h3 = h2 . addHeader "Host" self.host
+        h4 = h3 . addHeader "Content-Type" "multipart/form-data"
+        h5 = h4 . addHeader "Authorization" fakeAuthorization
+        h5
 
-def lambdaCall uri host:
-    resp = (callAWS uri host) . perform
-    print (resp . successful)
-    print (resp . text)
-
-def readConfig path:
+def configFromFile path:
     f = JSON.parse (readFile path)
-    (f . getText "uri", f . getText "host")
+    [uri, host] = ["uri", "host"].map f.getText
+    [method, body] = ["method", "body"].map x: coalesce(f.lookupText x)
+    AWSConfig method uri body host
 
 def main:
-    (uri, host) = readConfig "config.json"
-    lambdaCall uri host
+    config = configFromFile "config.json"
+    request = config.toRequest
+    response = request . perform
+    print (response.json)
