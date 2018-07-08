@@ -38,26 +38,73 @@ def fakeAuthorization:
     System.getEnv "FAKE_AUTHORIZATION"
 
 def fakeTimestamp:
-    "20180707T155948Z"
+    "20180708T173240Z"
 
 def getTimestamp:
     Time.now.toUTC . format "%Y%m%dT%H%M%SZ"
 
-def coalesce b: case b of
-    Nothing: ""
-    Just a: a
+class AWSConstants:
+    AWSConstants
+
+    def service: "lambda"
+    def domain:  "amazonaws.com"
+    def content_type: "application/json"
+    def allowedRegions: ["us-east-2", "us-east-1", "us-west-1", "us-west-2", "ap-south-1", "ap-northeast-2", "ap-northeast-3", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1", "ca-central-1", "cn-north-1", "cn-northwest-1", "eu-central-1", "eu-west-1", "eu-west-2", "eu-west-3", "sa-east-1"]
+    def allowedMethods: ["GET", "POST", "PUT", "DELETE"]
+    def allowedTargets: ["functions", "event-source-mappings", "account-settings", "tags"]
+    def defaultTarget: "functions"
+    def allowedApiVersions: ["2015-03-31", "2017-03-31"]
+    def defaultApiVersion: "2015-03-31"
+    def allowedActions: ["invocations", "aliases", "policy", "concurrency", "configuration", "versions"]
+
+    def getApiVersion maybe_version: case maybe_version of
+        Nothing: self.defaultApiVersion
+        Just version: if self.allowedApiVersions.contains version then version else throw ("Version " + version + " is not available, must be one of " + self.allowedApiVersions.toText)
+
+    def getBody maybeBody: case maybeBody of
+        Nothing: ""
+        Just body: body
+
+    def getTarget maybeTarget: case maybeTarget of
+        Nothing: self.defaultTarget
+        Just target: if self.allowedTargets.contains target then target else throw ("Target " + target + " is not available, must be one of " + self.allowedTargets.toText)
+
+    def getAction maybeAction: case maybeAction of
+        Nothing: Nothing
+        Just action: if self.allowedActions.contains action then Just action else throw ("Action " + action + " is not available, must be one of " + self.allowedActions.toText)
+
+    def checkMethod method:
+        if (self.allowedMethods.contains method).not then throw ("Method " + method + " is not available, must be one of " + self.allowedMethods.toText) else None
+
+    def checkRegion region:
+        if (self.allowedRegions.contains region).not then throw ("Region " + region + " is not available, must be one of " + self.allowedRegions.toText) else None
 
 class AWSConfig:
-    method :: Text
-    uri :: Text
-    body :: Text
-    host :: Text
+    method      :: Text
+    region      :: Text
+    api_version :: Text
+    body        :: Text
+    target      :: Text
+    target_id   :: Maybe Text
+    action      :: Maybe Text
+
+    def host: AWSConstants.service + "." + self.region + "." + AWSConstants.domain
+
+    def buildUri:
+        base = "https://" + self.host + "/" + self.api_version + "/" + self.target
+        case self.target_id of
+            Nothing: base
+            Just id: case self.action of
+                Nothing: base + "/" + id
+                Just action: base + "/" + id + "/" + action
 
     def toRequest:
+        uri = self.buildUri
         request = case self.method of
-            "POST": Http.post self.uri self.body
-            "PUT": Http.put self.uri self.body
-            other: Http.get self.uri
+            "POST": Http.post uri self.body
+            "PUT": Http.put uri self.body
+            "DELETE": Http.delete uri
+            "GET": Http.get uri
 
         h2 = request . addHeader "X-Amz-Date" fakeTimestamp
         h3 = h2 . addHeader "Host" self.host
@@ -65,14 +112,22 @@ class AWSConfig:
         h5 = h4 . addHeader "Authorization" fakeAuthorization
         h5
 
-def configFromFile path:
-    f = JSON.parse (readFile path)
-    [uri, host] = ["uri", "host"].map f.getText
-    [method, body] = ["method", "body"].map x: coalesce(f.lookupText x)
-    AWSConfig method uri body host
+def createAWSConfig jsonData:
+    method = jsonData.getText "method"
+    AWSConstants.checkMethod method
+    region = jsonData.getText "region"
+    AWSConstants.checkRegion region
+    apiVersion = AWSConstants.getApiVersion (jsonData.lookupText "api_version")
+    body = AWSConstants.getBody (jsonData.lookupText "body")
+    target = AWSConstants.getTarget (jsonData.lookupText "target")
+    targetId = jsonData.lookupText "target_id"
+    action = AWSConstants.getAction (jsonData.lookupText "action")
+
+    AWSConfig method region apiVersion body target targetId action
 
 def main:
-    config = configFromFile "config.json"
+    f = JSON.parse (readFile "config.json")
+    config = createAWSConfig f
     request = config.toRequest
     response = request . perform
     print (response.json)
