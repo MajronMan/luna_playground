@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdbool.h>
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -9,248 +10,384 @@
 #include <curl/curl.h>
 
 
-void digest(const EVP_MD *md,
-            const void *msg,
-            size_t msg_len,
-            unsigned char *md_val,
-            unsigned int *md_len) {
-  EVP_MD_CTX *md_ctx;
-  int ret;
+#define LEN(str) (sizeof(str) - /* '\0' */ 1)
 
-  md_ctx = EVP_MD_CTX_new();
-  if ((ret = EVP_DigestInit_ex(md_ctx, md, NULL)) != 1) {
-    fprintf(stderr, "EVP_DigestInit_ex: error return value %d\n", ret);
-    exit(EXIT_FAILURE);
-  }
-  if ((ret = EVP_DigestUpdate(md_ctx, msg, msg_len)) != 1) {
-    fprintf(stderr, "EVP_DigestUpdate: error return value %d\n", ret);
-    exit(EXIT_FAILURE);
-  }
-  if ((ret = EVP_DigestFinal_ex(md_ctx, md_val, md_len)) != 1) {
-    fprintf(stderr, "EVP_DigestFinal_ex: error return value %d\n", ret);
-    exit(EXIT_FAILURE);
-  }
-  EVP_MD_CTX_free(md_ctx);
+#define HASH_NAME ("sha256")
+#define SIGN_ALGORITHM ("AWS4-HMAC-SHA256")
+
+#define AMZDATE_FORMAT ("YYYYMMDDTHHMMSSZ")
+#define DATESTAMP_FORMAT ("YYYYMMDD")
+
+#define AWS_ACCESS_KEY_LEN (20)
+#define AWS_SECRET_KEY_LEN (40)
+
+#define SIGNED_HEADERS ("content-type;host;x-amz-date")
+
+
+typedef struct {
+    char *str;
+    size_t len;
+} StrLen;
+
+StrLen StrLen_new(const size_t len) {
+    StrLen s;
+    s.str = calloc(len + LEN("\0"), sizeof(char));
+    s.len = len;
+    return s;
 }
 
-void hmac(const EVP_MD *md,
-          const void *key,
-          int key_len,
-          const void *msg,
-          int msg_len,
-          unsigned char *md_val,
-          unsigned int *md_len) {
-  if (!HMAC(md, key, key_len, msg, msg_len, md_val, md_len)) {
-    fprintf(stderr, "HMAC: unknown error\n");
-    exit(EXIT_FAILURE);
-  }
+StrLen StrLen_const(char *const str, const size_t len) {
+    StrLen s;
+    s.str = str;
+    s.len = len;
+    return s;
 }
 
-void hex_dump(char *dest, unsigned char *bytes, size_t bytes_len) {
-  for (size_t i = 0; i < bytes_len; i++) {
-    sprintf(dest, "%02x", bytes[i]);
-    dest += 2;
-  }
+#define StrLen_of(static_str) StrLen_const(static_str, LEN(static_str))
+
+
+typedef struct {
+    const EVP_MD *type;
+    StrLen bin;
+    StrLen hex_str;
+} Hash;
+
+Hash Hash_new(const char *hash_name) {
+    Hash h;
+    h.type = EVP_get_digestbyname(hash_name);
+    if (!h.type) {
+        fprintf(stderr, "Unknown hash type %s\n", hash_name);
+        exit(EXIT_FAILURE);
+    }
+    h.bin = StrLen_new(EVP_MAX_MD_SIZE - LEN("\0"));
+    h.hex_str = StrLen_new(2 * EVP_MAX_MD_SIZE);
+    return h;
 }
 
-int main(int argc, char *argv[]) {
-  // get AWS credentials
-  char *access_key, *secret_key;
+void Hash_free(Hash *hash) {
+    free(hash->bin.str);
+    free(hash->hex_str.str);
+}
 
-  access_key = getenv("AWS_ACCESS_KEY");
-  secret_key = getenv("AWS_SECRET_KEY");
-  if (access_key == NULL || secret_key == NULL) {
-    fprintf(stderr, "Set AWS credentials:\n"
-           "  export AWS_ACCESS_KEY=<your_access_key_id>\n"
-           "  export AWS_SECRET_KEY=<your_secret_access_key>\n");
-    exit(EXIT_FAILURE);
-  }
+void Hash_digest(Hash *hash, const StrLen msg) {
+    EVP_MD_CTX *md_ctx;
+    int ret;
 
-  // get UTC date/time as: YYYYMMDDTHHMMSSZ
-  char amzdate[17], datestamp[9];
-  time_t t;
-  struct tm *tmp;
+    md_ctx = EVP_MD_CTX_new();
+    if ((ret = EVP_DigestInit_ex(md_ctx, hash->type, NULL)) != 1) {
+        fprintf(stderr, "EVP_DigestInit_ex: error return value %d\n", ret);
+        exit(EXIT_FAILURE);
+    }
+    if ((ret = EVP_DigestUpdate(md_ctx, msg.str, msg.len)) != 1) {
+        fprintf(stderr, "EVP_DigestUpdate: error return value %d\n", ret);
+        exit(EXIT_FAILURE);
+    }
+    if ((ret = EVP_DigestFinal_ex(md_ctx,
+                                  (unsigned char *) hash->bin.str,
+                                  (unsigned int *) &hash->bin.len)) != 1) {
+        fprintf(stderr, "EVP_DigestFinal_ex: error return value %d\n", ret);
+        exit(EXIT_FAILURE);
+    }
+    EVP_MD_CTX_free(md_ctx);
+}
 
-  t = time(NULL);
-  if (t == -1) {
-    perror("time");
-    exit(EXIT_FAILURE);
-  }
-  tmp = gmtime(&t);
-  if (tmp == NULL) {
-     perror("gmtime");
-     exit(EXIT_FAILURE);
-  }
-  if (strftime(amzdate, sizeof(amzdate), "%Y%m%dT%H%M%SZ", tmp) == 0) {
-     fprintf(stderr, "strftime: returned 0\n");
-     exit(EXIT_FAILURE);
-  }
-  memcpy(datestamp, amzdate, sizeof(datestamp - 1));
-  datestamp[sizeof(datestamp) - 1] = '\0';
+void Hash_hmac(Hash *hash, const StrLen key, const StrLen msg) {
+    if (!HMAC(hash->type,
+              key.str,
+              (int) key.len,
+              (const unsigned char *) msg.str,
+              msg.len,
+              (unsigned char *) hash->bin.str,
+              (unsigned int *) &hash->bin.len)) {
+        fprintf(stderr, "HMAC: unknown error\n");
+        exit(EXIT_FAILURE);
+    }
+}
 
-  // create canonical request parts
-  char canonical_uri[] = "/2015-03-31/functions/"; // todo param
-  size_t canonical_uri_len = strlen(canonical_uri);
-  char canonical_querystring[] = ""; // todo param
+void Hash_hex_str(Hash *hash) {
+    char *dest = hash->hex_str.str;
+    size_t i = 0;
+    for (; i < hash->bin.len; ++i) {
+        sprintf(dest, "%02x", (unsigned char) hash->bin.str[i]);
+        dest += 2;
+    }
+    hash->hex_str.len = 2 * hash->bin.len;
+}
 
-  char host[] = "lambda.eu-west-2.amazonaws.com"; // todo param
-  size_t host_len = strlen(host);
+void get_aws_credentials(StrLen *aws_access_key, StrLen *aws_secret_key) {
+    *aws_access_key = StrLen_const(getenv("AWS_ACCESS_KEY"), AWS_ACCESS_KEY_LEN);
+    *aws_secret_key = StrLen_const(getenv("AWS_SECRET_KEY"), AWS_SECRET_KEY_LEN);
 
-  size_t canonical_headers_len = /* 'host:' */ 5 + host_len + /* '\n' */ 1
-    + /* 'x-amz-date:' */ 11 + (sizeof(amzdate) - /* '\0' */ 1) + /* '\n' */ 1;
+    if (aws_access_key->str == NULL || aws_secret_key->str == NULL) {
+        fprintf(stderr, "Set AWS credentials:\n"
+                        "  export AWS_ACCESS_KEY=<your_access_key_id>\n"
+                        "  export AWS_SECRET_KEY=<your_secret_access_key>\n");
+        exit(EXIT_FAILURE);
+    }
+}
 
-  char *canonical_headers = calloc(canonical_headers_len + /* '\0' */ 1, sizeof(char));
-  sprintf(canonical_headers, "host:%s\nx-amz-date:%s\n", host, amzdate);
+StrLen get_amzdate() {
+    StrLen amzdate = StrLen_new(LEN(AMZDATE_FORMAT));
+    time_t t = time(NULL);
+    struct tm *tmp = gmtime(&t);
+    strftime(amzdate.str, amzdate.len + LEN("\0"), "%Y%m%dT%H%M%SZ", tmp);
+    return amzdate;
+}
 
-  char signed_headers[] = "host;x-amz-date"; // todo param
-  size_t signed_headers_len = strlen(signed_headers);
+StrLen get_datestamp(const StrLen amzdate) {
+    StrLen datestamp = StrLen_new(LEN(DATESTAMP_FORMAT));
+    memcpy(datestamp.str, amzdate.str, datestamp.len);
+    datestamp.str[datestamp.len] = '\0';
+    return datestamp;
+}
 
-  // calculate body hash
-  char body[] = ""; // todo param
-  size_t max_hash_len = 2 * EVP_MAX_MD_SIZE + 1;
-  char hash[max_hash_len];
+StrLen get_canon_request_hash_hex_str(Hash *hash,
+                                      const StrLen http_method,
+                                      const StrLen canon_uri,
+                                      const StrLen canon_query,
+                                      const StrLen content_type,
+                                      const StrLen host,
+                                      const StrLen amzdate,
+                                      const StrLen body) {
 
-  char *md_name = "sha256"; // todo param
+    size_t canon_headers_len = LEN("content-type:") + content_type.len + LEN("\n") +
+                               +LEN("host:") + host.len + LEN("\n")
+                               + LEN("x-amz-date:") + amzdate.len + LEN("\n");
+    size_t canon_request_len;
+    StrLen canon_request;
+    StrLen canon_request_hash_hex_str;
 
-  const EVP_MD *md;
-  unsigned char md_val[EVP_MAX_MD_SIZE];
-  unsigned int md_len;
-  size_t body_len;
+    Hash_digest(hash, body);
+    Hash_hex_str(hash);
 
-  md = EVP_get_digestbyname(md_name);
-  if(!md) {
-    fprintf(stderr, "Unknown message digest %s\n", md_name);
-    exit(EXIT_FAILURE);
-  }
+    canon_request_len = http_method.len + LEN("\n")
+                        + canon_uri.len + LEN("\n")
+                        + canon_query.len + LEN("\n")
+                        + canon_headers_len + LEN("\n")
+                        + LEN(SIGNED_HEADERS) + LEN("\n")
+                        + hash->hex_str.len;
+    canon_request = StrLen_new(canon_request_len);
 
-  body_len = strlen(body);
+    sprintf(canon_request.str,
+            "%s\n%s\n%s\ncontent-type:%s\nhost:%s\nx-amz-date:%s\n\n%s\n%s",
+            http_method.str,
+            canon_uri.str,
+            canon_query.str,
+            /* header */ content_type.str,
+            /* header */ host.str,
+            /* header */ amzdate.str,
+            SIGNED_HEADERS,
+            hash->hex_str.str);
 
-  digest(md, body, body_len, md_val, &md_len);
-  hex_dump(hash, md_val, md_len);
-  size_t hash_len = 2 * md_len;
+    Hash_digest(hash, canon_request);
+    Hash_hex_str(hash);
 
-  // assemble and hash canonical request
-  char method[] = "GET"; // todo param
-  size_t canonical_request_len = strlen(method) + /* '\n' */ 1
-    + strlen(canonical_uri) + /* '\n' */ 1
-    + strlen(canonical_querystring) + /* '\n' */ 1
-    + canonical_headers_len + /* '\n' */ 1
-    + signed_headers_len + /* '\n' */ 1
-    + hash_len;
+    free(canon_request.str);
 
-  char *canonical_request = calloc(canonical_request_len + /* '\0' */ 1, sizeof(char));
-  sprintf(canonical_request, "%s\n%s\n%s\n%s\n%s\n%s",
-    method, canonical_uri, canonical_querystring, canonical_headers, signed_headers, hash);
+    canon_request_hash_hex_str = StrLen_new(hash->hex_str.len);
+    strcpy(canon_request_hash_hex_str.str, hash->hex_str.str);
 
-  printf("canonical_request\n%s\n", canonical_request);
+    return canon_request_hash_hex_str;
+}
 
-  free(canonical_headers);
+StrLen get_credential_scope(const StrLen datestamp,
+                            const StrLen region,
+                            const StrLen service) {
 
-  digest(md, canonical_request, strlen(canonical_request), md_val, &md_len);
-  hex_dump(hash, md_val, md_len);
-  printf("%s\n%s\n", canonical_request, hash);
+    size_t credential_scope_len = datestamp.len + LEN("/")
+                                  + region.len + LEN("/")
+                                  + service.len + LEN("/aws4_request");
+    StrLen credential_scope = StrLen_new(credential_scope_len);
 
-  // create string to sign
-  char algorithm[] = "AWS4-HMAC-SHA256"; // todo param
-  size_t algorithm_len = strlen(algorithm);
-  char region[] = "eu-west-2"; //todo param
-  size_t region_len = strlen(region);
-  char service[] = "lambda"; //todo param
-  size_t service_len = strlen(service);
+    sprintf(credential_scope.str, "%s/%s/%s/aws4_request",
+            datestamp.str,
+            region.str,
+            service.str);
 
-  size_t credential_scope_len = (sizeof(datestamp) - /* '\0' */ 1) + /* '/' */ 1
-    + region_len + /* '/' */ 1
-    + service_len + /* '/aws4_request' */ 13;
-  char *credential_scope = calloc(credential_scope_len + /* '\0' */ 1, sizeof(char));
-  sprintf(credential_scope, "%s/%s/%s/aws4_request", datestamp, region, service);
-  printf("credential_scope\n%s", credential_scope);
+    return credential_scope;
+}
 
-  size_t string_to_sign_len = sizeof(algorithm) + /* '\n' */ 1
-    + sizeof(amzdate) + /* '\n' */ 1
-    + credential_scope_len + /* '\n' */ 1
-    + hash_len;
-  char *string_to_sign = calloc(string_to_sign_len + /* '\0' */ 1, sizeof(char));
-  sprintf(string_to_sign, "%s\n%s\n%s\n%s", algorithm, amzdate, credential_scope, hash);
-  printf("string_to_sign\n%s\n", string_to_sign);
+StrLen get_str_to_sign(const StrLen amzdate,
+                       const StrLen credential_scope,
+                       const StrLen canon_request_hash_hex_str) {
 
-  // calculate the signing key
-  char init_key[45];
-  sprintf(init_key, "AWS4%s", secret_key);
-  printf("init_key\n%s\n", init_key);
+    size_t str_to_sign_len = LEN(SIGN_ALGORITHM) + LEN("\n")
+                             + amzdate.len + LEN("\n")
+                             + credential_scope.len + LEN("\n")
+                             + canon_request_hash_hex_str.len;
+    StrLen str_to_sign = StrLen_new(str_to_sign_len);
 
-  hmac(md, init_key, sizeof(init_key) - /* '\0' */ 1, datestamp, sizeof(datestamp) - /* '\0' */ 1, md_val, &md_len);
-  hmac(md, md_val, md_len, region, region_len, md_val, &md_len);
-  hmac(md, md_val, md_len, service, service_len, md_val, &md_len);
-  hmac(md, md_val, md_len, "aws4_request", /* 'aws4_request' */ 12, md_val, &md_len);
-  hex_dump(hash, md_val, md_len);
+    sprintf(str_to_sign.str, "%s\n%s\n%s\n%s",
+            SIGN_ALGORITHM,
+            amzdate.str,
+            credential_scope.str,
+            canon_request_hash_hex_str.str);
 
-  printf("%s\n", hash);
+    return str_to_sign;
+}
 
-  // sign request
-  char signature[max_hash_len];
-  hmac(md, md_val, md_len, string_to_sign, string_to_sign_len, md_val, &md_len);
-  hex_dump(signature, md_val, md_len);
+StrLen get_signing_key(Hash *hash,
+                       const StrLen aws_secret_key,
+                       const StrLen datestamp,
+                       const StrLen region,
+                       const StrLen service) {
 
-  free(string_to_sign);
+    StrLen secret = StrLen_new(LEN("AWS4") + aws_secret_key.len);
+    StrLen signing_key;
 
-  printf("%s\n", signature);
+    memcpy(secret.str, "AWS4", LEN("AWS4"));
+    memcpy(secret.str + LEN("AWS4"), aws_secret_key.str, aws_secret_key.len);
 
-  // create authorization header
-  size_t authorization_header_len = /* 'Authorization: ' */ 15 + algorithm_len
-    + /* ' Credential=' */ 12 + /* access_key_len + '/' */ 21 + credential_scope_len
-    + /* ', SignedHeaders=' */ 16 + signed_headers_len
-    + /* ', Signature=' */ 12 + hash_len;
-  char *authorization_header = calloc(authorization_header_len, sizeof(char));
-  sprintf(authorization_header, "Authorization: %s Credential=%s/%s"
-    ", SignedHeaders=%s, Signature=%s",
-    algorithm, access_key, credential_scope, signed_headers, signature);
-  printf("authorization_header\n%s\n", authorization_header);
+    Hash_hmac(hash, secret, datestamp);
+    Hash_hmac(hash, hash->bin, region);
+    Hash_hmac(hash, hash->bin, service);
+    Hash_hmac(hash, hash->bin, StrLen_of("aws4_request"));
 
-  free(credential_scope);
+    free(secret.str);
 
-  // send request
-  CURLcode ret;
-  if(ret = curl_global_init(CURL_GLOBAL_DEFAULT)) {
-    fprintf(stderr, "curl: error code %d\n", ret);
-    exit(EXIT_FAILURE);
-  }
+    signing_key = StrLen_new(hash->bin.len);
+    memcpy(signing_key.str, hash->bin.str, hash->bin.len);
+    signing_key.str[signing_key.len] = '\0';
 
-  CURL *curl;
-  if(!(curl = curl_easy_init())) {
-    fprintf(stderr, "curl_easy_init: unknown init error\n");
-    exit(EXIT_FAILURE);
-  }
+    return signing_key;
+}
 
-  char protocol[] = "https://";
-  size_t protocol_len = strlen(protocol);
-  size_t url_len = protocol_len + host_len + canonical_uri_len + 1;
-  char *url = calloc(url_len, sizeof(char));
-  sprintf(url, "%s%s%s", protocol, host, canonical_uri);
-  printf("url\n%s\n", url);
+StrLen get_signature(Hash *hash,
+                     const StrLen signing_key,
+                     const StrLen str_to_sign) {
+    StrLen signature;
 
-  char header[256] = "";
+    Hash_hmac(hash, signing_key, str_to_sign);
+    Hash_hex_str(hash);
 
-  curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-  curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
-  curl_easy_setopt(curl, CURLOPT_URL, url);
+    signature = StrLen_new(hash->hex_str.len);
+    strcpy(signature.str, hash->hex_str.str);
 
-  struct curl_slist *headers = NULL;
-  headers = curl_slist_append(headers, "Accept:");
+    return signature;
+}
 
-  sprintf(header, "X-Amz-Date: %s", amzdate);
-  headers = curl_slist_append(headers, header);
+StrLen get_auth_header(const StrLen aws_access_key,
+                       const StrLen credential_scope,
+                       const StrLen signature) {
 
-  headers = curl_slist_append(headers, authorization_header);
+    size_t auth_header_len = LEN("Authorization: ") + LEN(SIGN_ALGORITHM)
+                             + LEN(" Credential=") + aws_access_key.len
+                             + LEN("/") + credential_scope.len
+                             + LEN(", SignedHeaders=") + LEN(SIGNED_HEADERS)
+                             + LEN(", Signature=") + signature.len;
+    StrLen auth_header = StrLen_new(auth_header_len);
 
-  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    sprintf(auth_header.str, "Authorization: %s"
+                             " Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+            SIGN_ALGORITHM,
+            aws_access_key.str,
+            credential_scope.str,
+            SIGNED_HEADERS,
+            signature.str);
 
-  curl_easy_perform(curl);
+    return auth_header;
+}
 
-  curl_easy_cleanup(curl);
-  curl_global_cleanup();
 
-  free(authorization_header);
-  free(canonical_request);
+int main(void) {
+    StrLen aws_access_key, aws_secret_key;
 
-  exit(EXIT_SUCCESS);
+    Hash hash = Hash_new(HASH_NAME);
+
+    StrLen amzdate = get_amzdate();
+    StrLen datestamp = get_datestamp(amzdate);
+
+    StrLen http_method = StrLen_of("GET");
+    StrLen canon_uri = StrLen_of("/2015-03-31/functions");
+    StrLen canon_query = StrLen_of("");
+    StrLen content_type = StrLen_of("application/x-www-form-urlencoded");
+    StrLen host = StrLen_of("lambda.eu-west-2.amazonaws.com");
+    StrLen body = StrLen_of("");
+
+    StrLen region = StrLen_of("eu-west-2");
+    StrLen service = StrLen_of("lambda");
+
+    StrLen canon_request_hash_hex_str;
+    StrLen credential_scope;
+    StrLen str_to_sign;
+    StrLen signing_key;
+    StrLen signature;
+    StrLen auth_header;
+
+    CURL *curl;
+    StrLen protocol;
+    size_t url_len;
+    StrLen url;
+    struct curl_slist *headers;
+    char header[256];
+
+
+    get_aws_credentials(&aws_access_key, &aws_secret_key);
+
+    canon_request_hash_hex_str = get_canon_request_hash_hex_str(&hash,
+                                                                http_method,
+                                                                canon_uri,
+                                                                canon_query,
+                                                                content_type,
+                                                                host,
+                                                                amzdate,
+                                                                body);
+
+    credential_scope = get_credential_scope(datestamp, region, service);
+
+    str_to_sign = get_str_to_sign(amzdate, credential_scope, canon_request_hash_hex_str);
+    free(canon_request_hash_hex_str.str);
+
+
+    signing_key = get_signing_key(&hash, aws_secret_key, datestamp, region, service);
+    free(datestamp.str);
+
+
+    signature = get_signature(&hash, signing_key, str_to_sign);
+    free(signing_key.str);
+    free(str_to_sign.str);
+
+
+    auth_header = get_auth_header(aws_access_key, credential_scope, signature);
+    free(credential_scope.str);
+    free(signature.str);
+
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+
+    protocol = StrLen_of("https://");
+
+    url_len = protocol.len + host.len + canon_uri.len;
+    url = StrLen_new(url_len);
+    sprintf(url.str, "%s%s%s", protocol.str, host.str, canon_uri.str);
+
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+
+    headers = NULL;
+    headers = curl_slist_append(headers, "Accept:");
+
+    sprintf(header, "Content-Type: %s", content_type.str);
+    headers = curl_slist_append(headers, header);
+
+    sprintf(header, "X-Amz-Date: %s", amzdate.str);
+    headers = curl_slist_append(headers, header);
+
+    headers = curl_slist_append(headers, auth_header.str);
+
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    curl_easy_perform(curl);
+
+    curl_easy_cleanup(curl);
+    curl_global_cleanup();
+
+
+    free(auth_header.str);
+    free(amzdate.str);
+
+    Hash_free(&hash);
+
+    exit(EXIT_SUCCESS);
 }
