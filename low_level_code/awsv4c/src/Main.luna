@@ -1,0 +1,33 @@
+import Std.Base
+import Std.System
+import Std.Foreign
+import Std.Foreign.C.Value
+import Std.HTTP
+import Std.Time
+
+
+def main:
+    aws_access_key = System.getEnv "AWS_ACCESS_KEY"
+    aws_secret_key = System.getEnv "AWS_SECRET_KEY"
+    amzdate = Time . now . toUTC . format "%Y%m%dT%H%M%SZ"
+    http_method = "GET"
+    canon_uri = "/2015-03-31/functions"
+    canon_query = ""
+    host = "lambda.eu-west-2.amazonaws.com"
+    body = ""
+    region = "eu-west-2"
+    service = "lambda"
+    
+    args = [aws_access_key, aws_secret_key, amzdate, http_method, canon_uri, canon_query, host, body, region, service]
+    cargs = args . map (str: (CString.fromText str).toCArg)
+
+    funPtr = lookupSymbol "awsv4sig" "awsv4sig_auth_header"
+    auth_header = funPtr . call CString cargs
+
+    request = Http.get ("https://" + host + canon_uri) . addHeader "X-Amz-Date" amzdate . addHeader "Authorization" auth_header.toText
+    print request
+
+    response = request . perform . json
+    print response
+
+    auth_header.free
