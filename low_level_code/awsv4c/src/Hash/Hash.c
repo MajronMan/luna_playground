@@ -3,6 +3,7 @@
 
 Hash Hash_new(const char *hash_name) {
     Hash h;
+    OpenSSL_add_all_algorithms();
     h.type = EVP_get_digestbyname(hash_name);
     if (!h.type) {
         fprintf(stderr, "Unknown hash type %s\n", hash_name);
@@ -22,7 +23,7 @@ void Hash_digest(Hash *hash, const StrLen msg) {
     EVP_MD_CTX *md_ctx;
     int ret;
 
-    md_ctx = EVP_MD_CTX_new();
+    md_ctx = EVP_MD_CTX_create();
     if ((ret = EVP_DigestInit_ex(md_ctx, hash->type, NULL)) != 1) {
         fprintf(stderr, "EVP_DigestInit_ex: error return value %d\n", ret);
         exit(EXIT_FAILURE);
@@ -37,7 +38,7 @@ void Hash_digest(Hash *hash, const StrLen msg) {
         fprintf(stderr, "EVP_DigestFinal_ex: error return value %d\n", ret);
         exit(EXIT_FAILURE);
     }
-    EVP_MD_CTX_free(md_ctx);
+    EVP_MD_CTX_destroy(md_ctx);
 }
 
 void Hash_hmac(Hash *hash, const StrLen key, const StrLen msg) {
