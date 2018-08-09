@@ -16,6 +16,7 @@ import qualified Luna.Prim.Time               as Time
 import qualified Luna.Prim.WebSockets         as WebSockets
 import qualified Luna.Prim.System             as System
 import qualified Luna.Prim.HTTP               as HTTP
+import qualified Luna.Prim.AWS as AWS
 import qualified Luna.Std.Builder             as Builder
 
 import Data.Map            (Map)
@@ -29,6 +30,7 @@ stdlibImports = [ "Std.Base"
                 , "Std.WebSockets"
                 , "Std.Foreign"
                 , "Std.Foreign.C.Value"
+                , "Std.Remote.AWS"
                 ]
 
 stdlib :: forall graph m.
@@ -43,8 +45,9 @@ stdlib = do
     sysFuncs     <- System.exports     @graph
     httpFuncs    <- HTTP.exports       @graph
     foreignFuncs <- Foreign.exports    @graph finalizersCtx
+    awsFuncs <- AWS.exports @graph
 
-    let defs = Map.unions [baseFuncs, timeFuncs, wsFuncs, sysFuncs, httpFuncs, foreignFuncs]
+    let defs = Map.unions [baseFuncs, timeFuncs, wsFuncs, sysFuncs, httpFuncs, foreignFuncs, awsFuncs]
         docDefs = Def.Documented def <$> defs
         unit = Unit.Unit (Def.DefsMap docDefs) def
         unitRef = Unit.UnitRef (Unit.Precompiled unit) (Unit.Imports stdlibImports)

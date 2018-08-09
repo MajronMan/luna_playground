@@ -55,6 +55,8 @@ dependencies:
     - network
     - websockets
     - wuss
+    - amazonka
+    - amazonka-lambda
 
 default-extensions:
     - AllowAmbiguousTypes

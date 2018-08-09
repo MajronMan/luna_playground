@@ -1,0 +1,4 @@
+import Std.Remote.AWS
+
+def main:
+    AWS.listFunctions
