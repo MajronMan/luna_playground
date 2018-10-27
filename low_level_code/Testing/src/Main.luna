@@ -1,4 +1,7 @@
-import Std.Remote.AWS
+import Std.Base
+
+def add2 x:
+    x + 2
 
 def main:
-    AWS.listFunctions
+    print (1 . upto 3 . each add2)
