@@ -1,0 +1,16 @@
+import Std.Base
+import Std.AWS
+import Std.Time
+
+
+def main:
+    testFunc = AWS.init . lookupFunction "testFunc" . get
+
+    t0 = Time.now
+
+    1 . upto 1000
+        . map i: testFunc.invokeAsync ""
+        . each f: f.await
+
+    t1 = Time.now
+    print (t1 . diff t0)
