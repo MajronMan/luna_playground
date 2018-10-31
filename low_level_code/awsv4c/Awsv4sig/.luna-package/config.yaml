@@ -4,9 +4,9 @@ project-version:
   major: 0
   patch: 1
 build-type: executable-library
-maintainer: ''
-synopsis: ''
-author: ''
+maintainer: 'Łukasz lol'
+synopsis: 'Cmon it\'s a playground'
+author: 'Miron Markowski'
 license:
   tag: none
-description: ''
+description: 'Just for fun'

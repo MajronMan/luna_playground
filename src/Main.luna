@@ -125,9 +125,13 @@ def createAWSConfig jsonData:
 
     AWSConfig method region apiVersion body target targetId action
 
-def main:
+def old_main:
     f = JSON.parse (readFile "config.json")
     config = createAWSConfig f
     request = config.toRequest
     response = request . perform
     print (response.json)
+
+def main:
+    f = Future (return 2)
+

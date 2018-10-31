@@ -1,0 +1,58 @@
+import Std.Base
+import Std.System
+import Std.AWS
+
+def foo:
+    print "eval foo"
+    sleep 5.seconds.toMicroseconds
+    5
+
+def bar:
+    sleep 2.seconds.toMicroseconds
+    4
+def baz x:
+    sleep 1.seconds.toMicroseconds
+    x + 2
+
+def main2:
+    a = future foo
+    sleep 5.seconds.toMicroseconds
+    b = a . flatMap (x:
+        print "eval lam"
+        sleep 5.seconds.toMicroseconds
+        future (x+5))
+    print "immediate"
+    c = b.await
+    print "done"
+    print c
+    h = a.map (+1)
+    print h.await
+
+
+    None
+
+class Foo:
+    field1 :: Int
+
+    def method1:
+        self.field1 - 3
+
+    def method2 x:
+        if x < 10 then Nothing else Just (x + (self.method1))
+
+
+def main3:
+    a = [1, 4, 11, 20]
+    b = Foo 10
+    c = x: acc: case x of
+        Nothing: acc
+        Just v: acc + v
+
+    print (a.map b.method2 . fold 0 c)
+
+    print (((x: x * 2) 2) )
+
+
+def main:
+  aws1 = AWS.init
+  aws2 = aws1.setRole "service-role/lambda_basic_execution"
